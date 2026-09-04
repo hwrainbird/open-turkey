@@ -51,6 +51,8 @@ The installed program is independent of the source directory — once installed,
 - **Block**: a set of sites/apps you want to block together.
 - **Active**: a block that is currently in effect (the system is enforcing it).
 - **Lock (`--lock`)**: when enabled, prevents deactivation via `stop`. The only way to deactivate a locked block is `unlock`, which requires completing a typing challenge — deliberate friction to outlast an impulse.
+- The challenge is read from the terminal (`/dev/tty`), not standard input, so it cannot be answered by a pipe, a redirect or a script. It is asked one line at a time, so the full text is never on screen to be copied in one go.
+- `--lock-chars` must be between 50 and 5000. Out-of-range values are rejected at `start`; nonsensical values already stored in the database fall back to the 300-character default rather than producing a challenge that is trivial to pass.
 
 ## Commands
 
@@ -117,7 +119,8 @@ open-turkey block remove-site social-media instagram.com
 Notes:
 
 - If the block is **active**, Open Turkey re-applies the layers so the change takes effect immediately.
-- If the block is **active and locked**, you **cannot** edit its sites/apps. Run `open-turkey unlock <block>` first (which deactivates it), make your changes, then activate again.
+- **Adding** sites or apps is always allowed, even on an active, locked block. Tightening a block can never help you get around it, so it should never cost you the typing challenge.
+- **Removing** sites or apps from an active, locked block costs you the typing challenge. Unlike `unlock`, the block stays active and locked afterwards — the challenge buys the removal, not the end of the block. Without this, emptying a locked block would deactivate it automatically and skip the challenge entirely.
 
 Remove an app (process) from a block:
 

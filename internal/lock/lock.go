@@ -32,7 +32,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"strings"
+	"time"
 )
 
 // DefaultLockChars é a quantidade padrão de caracteres do desafio.
@@ -40,6 +40,47 @@ import (
 // impossível. Leva uns 3-5 minutos para a maioria das pessoas — tempo
 // suficiente para o impulso de "preciso ver o Instagram AGORA" passar.
 const DefaultLockChars = 300
+
+// MinLockChars e MaxLockChars delimitam valores aceitáveis para --lock-chars.
+//
+// O mínimo existe porque um desafio curto não é atrito nenhum: com 0 caracteres
+// o desafio virava uma string vazia que qualquer Enter satisfazia, ou seja,
+// uma trava que não travava nada.
+//
+// O máximo existe para evitar o erro oposto — um número absurdo (ou negativo,
+// que antes derrubava o programa) que tornaria o bloco impossível de destravar
+// e exigiria mexer no banco de dados na mão.
+const (
+	MinLockChars = 50
+	MaxLockChars = 5000
+)
+
+// larguraLinha é o tamanho de cada pedaço do desafio.
+//
+// O desafio é pedido pedaço por pedaço, e não de uma vez só. Isso serve a dois
+// propósitos: linhas curtas são mais fáceis de acompanhar com o olho, e não
+// existe um momento em que o texto inteiro está na tela para ser selecionado
+// e colado de uma vez.
+const larguraLinha = 50
+
+// penalidadeErro é a pausa aplicada depois de cada linha digitada errado.
+// Não é punição: é para desencorajar tentativa e erro no chute.
+const penalidadeErro = 3 * time.Second
+
+// SanitizeChars devolve um tamanho de desafio seguro.
+//
+// Valores abaixo do mínimo (incluindo 0 e negativos, que podem estar gravados
+// em bancos criados antes desta checagem) viram o padrão em vez de virarem um
+// desafio trivial. Na dúvida, erramos para o lado de travar mais, nunca menos.
+func SanitizeChars(n int) int {
+	if n < MinLockChars {
+		return DefaultLockChars
+	}
+	if n > MaxLockChars {
+		return MaxLockChars
+	}
+	return n
+}
 
 // charset é o conjunto de caracteres usados para gerar o desafio.
 // Inclui letras minúsculas, maiúsculas, números e símbolos.
@@ -99,142 +140,142 @@ func GenerateChallenge(length int) (string, error) {
 
 // RunChallenge executa o desafio completo de digitação.
 //
-// Fluxo:
-//  1. Gera a string aleatória com GenerateChallenge
-//  2. Mostra a string formatada para o usuário (quebrada em linhas de 70 caracteres)
-//  3. Lê o que o usuário digitou via stdin (teclado)
-//  4. Compara caractere por caractere
-//  5. Se bateu: ótimo, desbloqueio autorizado
-//  6. Se não bateu: mostra exatamente onde errou para ajudar na próxima tentativa
+// === O QUE MUDOU E POR QUÊ ===
 //
-// Retorna true se o desafio foi completado com sucesso, false caso contrário.
+// A primeira versão mostrava os 300 caracteres de uma vez e lia a resposta da
+// entrada padrão. Isso deixava duas saídas abertas:
+//
+//  1. A entrada padrão pode ser um cano. "echo ... | open-turkey unlock" ou
+//     "unlock < arquivo" resolviam o desafio sem ninguém digitar nada.
+//  2. Com o texto inteiro na tela, bastava selecionar tudo com o mouse e colar.
+//
+// Agora lemos direto do terminal (/dev/tty) em vez da entrada padrão, o que
+// impede canos e redirecionamentos, e pedimos o desafio uma linha por vez, de
+// modo que nunca existe um momento em que o texto todo está disponível para
+// ser copiado de uma vez.
+//
+// Isso não é inviolável e não pretende ser: quem estiver decidido a burlar
+// ainda pode colar linha por linha. O objetivo é que burlar exija intenção
+// deliberada e sustentada, e não um reflexo de dez segundos.
+//
+// Retorna true se o desafio foi completado com sucesso.
 func RunChallenge(length int) (bool, error) {
-	// Passo 1: Gerar o desafio
+	length = SanitizeChars(length)
+
 	challenge, err := GenerateChallenge(length)
 	if err != nil {
 		return false, fmt.Errorf("falha ao gerar desafio: %w", err)
 	}
 
-	// Passo 2: Mostrar o desafio formatado para o usuário.
-	// Quebramos em linhas de 70 caracteres para facilitar a leitura.
-	// Uma linha com 300 caracteres seria impossível de acompanhar.
-	fmt.Println()
-	fmt.Println("=== DESAFIO DE DESBLOQUEIO ===")
-	fmt.Println()
-	fmt.Printf("Para desbloquear, digite EXATAMENTE o texto abaixo (%d caracteres):\n", length)
-	fmt.Println()
-	fmt.Println(formatChallenge(challenge, 70))
-	fmt.Println()
+	// Abrimos o terminal de verdade. Se não houver um, o desafio não acontece —
+	// é exatamente esse o ponto.
+	tty, err := abrirTerminal()
+	if err != nil {
+		return false, err
+	}
+	defer tty.Close()
 
-	// Passo 3: Ler a entrada do usuário.
-	// Usamos bufio.Scanner porque ele lê uma linha inteira de uma vez.
-	// O Scanner padrão do Go (fmt.Scan) para no primeiro espaço, o que
-	// não serve para nós — nossa string pode ter qualquer caractere.
-	fmt.Print("Digite o texto acima: ")
-	scanner := bufio.NewScanner(os.Stdin)
+	linhas := dividirEmLinhas(challenge, larguraLinha)
 
-	// Por padrão, o Scanner tem um limite de ~64KB por linha.
-	// Para desafios muito grandes, precisamos aumentar esse buffer.
-	// 1MB é mais que suficiente para qualquer desafio razoável.
+	fmt.Fprintln(tty)
+	fmt.Fprintln(tty, "=== DESAFIO DE DESBLOQUEIO ===")
+	fmt.Fprintln(tty)
+	fmt.Fprintf(tty, "%d caracteres, em %d linhas.\n", length, len(linhas))
+	fmt.Fprintln(tty, "Cada linha só aparece depois que a anterior for digitada corretamente.")
+	fmt.Fprintln(tty)
+
+	scanner := bufio.NewScanner(tty)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	// Scan() lê uma linha do stdin. Retorna false se houver erro ou EOF.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return false, fmt.Errorf("erro ao ler entrada do usuário: %w", err)
+	for i, linha := range linhas {
+		// O laço interno só termina quando esta linha sair correta.
+		// Errar não recomeça o desafio inteiro — seria punitivo demais para
+		// algo que uma pessoa cansada vai digitar de madrugada.
+		for {
+			fmt.Fprintf(tty, "Linha %d/%d:\n", i+1, len(linhas))
+			fmt.Fprintf(tty, "  %s\n", linha)
+			fmt.Fprint(tty, "> ")
+
+			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					return false, fmt.Errorf("erro ao ler do terminal: %w", err)
+				}
+				return false, fmt.Errorf("entrada encerrada antes do fim do desafio")
+			}
+
+			if scanner.Text() == linha {
+				fmt.Fprintln(tty)
+				break
+			}
+
+			relatarDiferenca(tty, linha, scanner.Text())
+			time.Sleep(penalidadeErro)
+			fmt.Fprintln(tty)
 		}
-		// Se Scan() retorna false sem erro, significa EOF (o usuário
-		// fechou o terminal ou redirecionou /dev/null, por exemplo).
-		return false, fmt.Errorf("entrada vazia — nenhum texto foi digitado")
 	}
 
-	// scanner.Text() retorna a linha lida, já sem o '\n' final.
-	// Não precisamos fazer trim manual — o Scanner já cuida disso.
-	input := scanner.Text()
+	fmt.Fprintln(tty, "Desbloqueio autorizado! Desafio concluído com sucesso.")
+	return true, nil
+}
 
-	// Passo 4: Comparar a entrada com o desafio.
-	// Primeiro fazemos uma comparação rápida (strings iguais?).
-	if input == challenge {
-		// Passo 5: Sucesso!
-		fmt.Println()
-		fmt.Println("Desbloqueio autorizado! Desafio concluído com sucesso.")
-		return true, nil
+// abrirTerminal abre /dev/tty, que é sempre o terminal ao qual o processo está
+// ligado — mesmo que a entrada padrão tenha sido redirecionada.
+//
+// É essa diferença que faz o desafio valer alguma coisa. A entrada padrão pode
+// vir de um arquivo, de um cano ou de outro programa; /dev/tty só existe se
+// houver um terminal de verdade do outro lado. Sem terminal, recusamos.
+func abrirTerminal() (*os.File, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"o desafio de desbloqueio precisa de um terminal de verdade "+
+				"(não funciona por cano, redirecionamento ou script): %w", err)
+	}
+	return tty, nil
+}
+
+// dividirEmLinhas quebra o desafio em pedaços de largura fixa.
+// O último pedaço pode ser menor que os demais.
+func dividirEmLinhas(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
 	}
 
-	// Passo 6: Falha — vamos encontrar onde está o primeiro erro
-	// para ajudar o usuário na próxima tentativa.
-	fmt.Println()
-	fmt.Println("Texto incorreto! Desbloqueio negado.")
+	var linhas []string
+	for i := 0; i < len(text); i += width {
+		fim := i + width
+		if fim > len(text) {
+			fim = len(text)
+		}
+		linhas = append(linhas, text[i:fim])
+	}
+	return linhas
+}
 
-	// Encontramos a primeira posição onde os textos diferem.
-	// Percorremos caractere por caractere até achar a diferença.
-	minLen := len(input)
-	if len(challenge) < minLen {
-		minLen = len(challenge)
+// relatarDiferenca aponta onde a linha digitada divergiu da esperada.
+//
+// Mostrar a posição do erro não enfraquece nada — quem está digitando já tem o
+// texto na frente. Serve só para não deixar a pessoa caçando um caractere
+// errado no meio de cinquenta.
+func relatarDiferenca(out *os.File, esperado, digitado string) {
+	fmt.Fprintln(out, "Linha incorreta.")
+
+	minLen := len(digitado)
+	if len(esperado) < minLen {
+		minLen = len(esperado)
 	}
 
 	for i := 0; i < minLen; i++ {
-		if input[i] != challenge[i] {
-			// Mostramos a posição (começando em 1, não em 0, porque
-			// para um usuário comum "posição 0" não faz sentido).
-			fmt.Printf("Erro na posição %d: esperado '%c', digitado '%c'\n", i+1, challenge[i], input[i])
-			return false, nil
+		if digitado[i] != esperado[i] {
+			fmt.Fprintf(out, "Erro na posição %d: esperado '%c', digitado '%c'\n",
+				i+1, esperado[i], digitado[i])
+			return
 		}
 	}
 
-	// Se chegamos aqui, um texto é prefixo do outro (um é mais curto).
-	// Isso significa que o usuário digitou caracteres a mais ou a menos.
-	if len(input) < len(challenge) {
-		fmt.Printf("Texto muito curto! Você digitou %d caracteres, mas são necessários %d.\n", len(input), len(challenge))
+	if len(digitado) < len(esperado) {
+		fmt.Fprintf(out, "Faltaram caracteres: digitou %d, esperado %d.\n", len(digitado), len(esperado))
 	} else {
-		fmt.Printf("Texto muito longo! Você digitou %d caracteres, mas são necessários %d.\n", len(input), len(challenge))
+		fmt.Fprintf(out, "Sobraram caracteres: digitou %d, esperado %d.\n", len(digitado), len(esperado))
 	}
-
-	return false, nil
-}
-
-// formatChallenge quebra o texto do desafio em linhas de largura fixa.
-//
-// Sem isso, uma string de 300 caracteres apareceria assim no terminal:
-//
-//	aB3!kZ$m9Q...(...300 caracteres em uma linha só, saindo da tela)
-//
-// Com formatação (lineWidth=70), fica assim:
-//
-//	aB3!kZ$m9QxY7pL#nW2vR8dF0jH5... (70 caracteres)
-//	tK4gM1sA6bC3eI9oU0wX7yZ2qJ5r... (70 caracteres)
-//	fD8hN4lP0mV6kB1aS3cG9iO5uW7x... (70 caracteres)
-//	eR2tY4jL6nH8pF0qZ (restante)
-//
-// Isso facilita muito a leitura e permite que o usuário acompanhe
-// com o dedo na tela onde está enquanto digita.
-func formatChallenge(text string, lineWidth int) string {
-	// Se o texto é menor que a largura da linha, não precisa quebrar.
-	if len(text) <= lineWidth {
-		return text
-	}
-
-	// strings.Builder é a forma eficiente de concatenar strings em Go.
-	// Cada vez que você faz s = s + "algo", Go cria uma string nova na memória.
-	// O Builder evita isso acumulando tudo em um buffer interno.
-	var builder strings.Builder
-
-	for i := 0; i < len(text); i += lineWidth {
-		// Calculamos o fim do trecho atual.
-		// Se estivermos no último trecho, o fim é o tamanho total do texto.
-		end := i + lineWidth
-		if end > len(text) {
-			end = len(text)
-		}
-
-		// Escrevemos o trecho atual.
-		builder.WriteString(text[i:end])
-
-		// Adicionamos uma quebra de linha, exceto depois do último trecho.
-		if end < len(text) {
-			builder.WriteByte('\n')
-		}
-	}
-
-	return builder.String()
 }

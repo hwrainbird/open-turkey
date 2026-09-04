@@ -99,6 +99,19 @@ func ApplyHosts(domains []string) error {
 			continue
 		}
 
+		// Segunda linha de defesa contra domínios malformados. O CLI já os
+		// recusa na entrada, mas um banco criado antes dessa checagem pode ter
+		// lixo gravado — e é aqui, escrevendo linha a linha num arquivo do
+		// sistema, que o lixo faria estrago.
+		//
+		// ApplyHosts e IsHostsApplied PRECISAM aplicar exatamente o mesmo
+		// filtro. Se ApplyHosts pula um domínio que IsHostsApplied ainda
+		// espera encontrar, o daemon conclui que o arquivo está desatualizado
+		// e reescreve tudo a cada 5 segundos, para sempre.
+		if !DominioValido(dominio) {
+			continue
+		}
+
 		// Sempre adicionamos o domínio como foi informado
 		secao.WriteString(fmt.Sprintf("0.0.0.0 %s\n", dominio))
 
@@ -198,6 +211,19 @@ func IsHostsApplied(domains []string) bool {
 	for _, dominio := range domains {
 		dominio = NormalizarDominio(dominio)
 		if dominio == "" {
+			continue
+		}
+
+		// Segunda linha de defesa contra domínios malformados. O CLI já os
+		// recusa na entrada, mas um banco criado antes dessa checagem pode ter
+		// lixo gravado — e é aqui, escrevendo linha a linha num arquivo do
+		// sistema, que o lixo faria estrago.
+		//
+		// ApplyHosts e IsHostsApplied PRECISAM aplicar exatamente o mesmo
+		// filtro. Se ApplyHosts pula um domínio que IsHostsApplied ainda
+		// espera encontrar, o daemon conclui que o arquivo está desatualizado
+		// e reescreve tudo a cada 5 segundos, para sempre.
+		if !DominioValido(dominio) {
 			continue
 		}
 

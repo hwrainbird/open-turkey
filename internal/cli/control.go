@@ -83,6 +83,17 @@ var startCmd = &cobra.Command{
 			return fmt.Errorf("erro ao ler flag --lock-chars: %w", err)
 		}
 
+		// Recusamos valores sem sentido aqui, na entrada, em vez de deixar o
+		// pacote lock corrigir em silêncio depois. Antes desta checagem,
+		// --lock-chars 0 criava um desafio vazio (destravável com um Enter) e
+		// um valor negativo derrubava o comando "unlock" para sempre, deixando
+		// o bloco sem nenhuma forma de ser desativado.
+		if usarTrava && (charsDesbloqueio < lock.MinLockChars || charsDesbloqueio > lock.MaxLockChars) {
+			return fmt.Errorf(
+				"--lock-chars precisa estar entre %d e %d (recebido: %d)",
+				lock.MinLockChars, lock.MaxLockChars, charsDesbloqueio)
+		}
+
 		// --- Passo 1: Abrir o banco de dados ---
 		// openDB() é uma função auxiliar definida em block.go que abre o banco
 		// SQLite no caminho padrão (/var/lib/open-turkey/open-turkey.db).

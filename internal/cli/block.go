@@ -28,6 +28,7 @@ import (
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
+	"github.com/brunodcdo/open-turkey/internal/lock"
 	"github.com/spf13/cobra"
 )
 
@@ -56,6 +57,57 @@ func openDB() (*db.DB, error) {
 	}
 
 	return db.OpenDB(db.DefaultDBPath)
+}
+
+// --------------------------------------------------------------------------
+// Guarda de edição: adicionar é livre, remover é travado
+// --------------------------------------------------------------------------
+
+// autorizarRemocao decide se uma remoção pode seguir adiante.
+//
+// A assimetria é proposital. ADICIONAR sites ou apps é sempre livre: apertar o
+// cerco nunca ajuda quem está tentando burlar o próprio bloqueio, e cobrar o
+// desafio de digitação só para incluir um domínio esquecido faria a ferramenta
+// ser evitada justamente quando ela deveria ser usada.
+//
+// REMOVER é o oposto — é exatamente por onde a trava seria contornada. Sem
+// esta guarda, bastava remover todos os sites e apps de um bloco travado para
+// que ele fosse desativado automaticamente, sem desafio nenhum.
+//
+// A diferença para o comando "unlock" é o que acontece depois: aqui o bloco
+// continua ATIVO e TRAVADO. O desafio compra a remoção de um item, não o fim
+// do bloqueio. Assim, tirar um domínio da lista não obriga a desmontar e
+// remontar o bloco inteiro.
+//
+// Blocos inativos não são afetados: IsBlockLocked devolve false quando o bloco
+// não está ativo, então editar um bloco desligado continua livre.
+func autorizarRemocao(database *db.DB, name string) error {
+	travado, err := database.IsBlockLocked(name)
+	if err != nil {
+		return err
+	}
+	if !travado {
+		return nil
+	}
+
+	detalhe, err := database.GetBlock(name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("O bloco '%s' está travado.\n", name)
+	fmt.Println("Remover itens exige o desafio de digitação.")
+	fmt.Println("Ao contrário de 'unlock', o bloco continua ativo e travado depois.")
+
+	sucesso, err := lock.RunChallenge(detalhe.LockChars)
+	if err != nil {
+		return fmt.Errorf("erro ao executar desafio de desbloqueio: %w", err)
+	}
+	if !sucesso {
+		return fmt.Errorf("desafio não concluído — nada foi removido do bloco '%s'", name)
+	}
+
+	return nil
 }
 
 // --------------------------------------------------------------------------
@@ -135,6 +187,17 @@ var blockAddSiteCmd = &cobra.Command{
 			domains[i] = blocker.NormalizarDominio(d)
 		}
 
+		// Validamos ANTES de gravar. Esses domínios acabam escritos linha a
+		// linha no /etc/hosts, então uma entrada malformada (com uma quebra de
+		// linha no meio, por exemplo) viraria linha injetada num arquivo do
+		// sistema. Recusamos o comando inteiro em vez de gravar parte dele.
+		for i, d := range domains {
+			if !blocker.DominioValido(d) {
+				fmt.Fprintf(os.Stderr, "Erro: '%s' não é um domínio válido.\n", args[1+i])
+				os.Exit(1)
+			}
+		}
+
 		database, err := openDB()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
@@ -188,6 +251,12 @@ var blockRemoveSiteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		// Adicionar é livre; remover de um bloco travado exige o desafio.
+		if err := autorizarRemocao(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
 
 		if err := database.RemoveSites(name, domains); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
@@ -292,6 +361,12 @@ var blockRemoveAppCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		// Adicionar é livre; remover de um bloco travado exige o desafio.
+		if err := autorizarRemocao(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
 
 		if err := database.RemoveApps(name, processNames); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)

@@ -387,6 +387,55 @@ func NormalizarDominio(entrada string) string {
 	return s
 }
 
+// DominioValido diz se uma string é segura para ser gravada nos arquivos do
+// sistema como um nome de domínio.
+//
+// Por que isso existe: ApplyHosts escreve cada domínio direto no /etc/hosts,
+// uma linha por entrada. Sem esta checagem, um "domínio" contendo uma quebra
+// de linha injetaria linhas inteiras nesse arquivo — bastava passar algo como
+// "exemplo.com\n0.0.0.0 outra-coisa" para redirecionar um host que ninguém
+// pediu para bloquear. NormalizarDominio não protege contra isso: ele remove
+// espaços das pontas, mas uma quebra de linha no meio da string sobrevive.
+//
+// Validamos na entrada (no CLI, ao adicionar) e de novo na hora de gravar,
+// porque um banco criado antes desta checagem pode conter lixo.
+//
+// Aceitamos só o que um hostname realmente pode conter: letras ASCII
+// minúsculas, dígitos, hífen, sublinhado e ponto. Espera-se que a entrada já
+// tenha passado por NormalizarDominio, que faz o lowercase. Domínios com
+// acentos precisam ser informados na forma punycode ("xn--...").
+func DominioValido(s string) bool {
+	// 253 é o comprimento máximo de um nome de domínio (RFC 1035).
+	if s == "" || len(s) > 253 {
+		return false
+	}
+
+	// Sem ponto não é um domínio — é digitação errada ou lixo.
+	if !strings.Contains(s, ".") {
+		return false
+	}
+
+	// Pontas e sequências inválidas: ".exemplo.com", "exemplo.com.",
+	// "-exemplo.com", "exemplo..com".
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") ||
+		strings.HasPrefix(s, "-") || strings.HasSuffix(s, "-") ||
+		strings.Contains(s, "..") {
+		return false
+	}
+
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '.' || r == '_':
+		default:
+			return false
+		}
+	}
+
+	return true
+}
+
 // =============================================================================
 // Funções auxiliares — Firefox
 // =============================================================================
