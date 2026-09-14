@@ -72,7 +72,7 @@ adicionar_sites() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. IA — bloqueada o tempo todo, com cinco minutos de folga no sábado
+# 1. ai — bloqueado o tempo todo, com cinco minutos de folga no sábado
 # ---------------------------------------------------------------------------
 #
 # api.anthropic.com NÃO está na lista, de propósito: o Claude Code fala com a
@@ -83,42 +83,42 @@ adicionar_sites() {
 # viravam bloqueio do domínio inteiro e derrubariam git, gh e o download de
 # módulos Go junto.
 
-echo "==> IA"
-criar_bloco ia
-adicionar_sites ia "$LISTAS/ai.txt"
+echo "==> AI"
+criar_bloco ai
+adicionar_sites ai "$LISTAS/ai.txt"
 
 # ---------------------------------------------------------------------------
-# 2. Atenção — YouTube, Reddit e notícias, sempre
+# 2. attention — YouTube, Reddit e notícias, sempre
 # ---------------------------------------------------------------------------
 
-echo "==> Atenção (YouTube, Reddit, notícias)"
-criar_bloco atencao
-adicionar_sites atencao "$LISTAS/attention.txt"
+echo "==> Attention (YouTube, Reddit, news)"
+criar_bloco attention
+adicionar_sites attention "$LISTAS/attention.txt"
 
 # ---------------------------------------------------------------------------
-# 3. Vícios — pornografia, apostas e jogos, sempre
+# 3. vice — pornografia, apostas e jogos, sempre
 # ---------------------------------------------------------------------------
 #
 # As 22 regras de palavra-chave da lista original (*p=*betting* e afins) não
 # têm equivalente aqui: o Open Turkey bloqueia domínios, não pedaços de URL.
-# Quem cobre essa brecha é o bloco "noite", que a partir das 17h30 bloqueia
+# Quem cobre essa brecha é o bloco "evening", que a partir das 17h30 bloqueia
 # tudo que não estiver na lista-branca.
 
-echo "==> Vícios (pornografia, apostas, jogos)"
-criar_bloco vicios
-adicionar_sites vicios "$LISTAS/vice.txt"
+echo "==> Vice (porn, gambling, games)"
+criar_bloco vice
+adicionar_sites vice "$LISTAS/vice.txt"
 
 # ---------------------------------------------------------------------------
-# 4. Noite — lista-branca a partir das 17h30
+# 4. evening — lista-branca a partir das 17h30
 # ---------------------------------------------------------------------------
 #
 # Este bloco é ao contrário dos outros: o que está na lista é o que PASSA.
 # Vale só dentro do navegador — terminal, ssh, git e atualizações do sistema
 # não são afetados.
 
-echo "==> Noite (lista-branca)"
-criar_bloco noite --allow
-adicionar_sites noite "$LISTAS/allowlist.txt"
+echo "==> Evening (whitelist)"
+criar_bloco evening --allow
+adicionar_sites evening "$LISTAS/allowlist.txt"
 
 # ---------------------------------------------------------------------------
 # Agenda
@@ -128,16 +128,16 @@ if [ "$ATIVAR" = "--activate" ]; then
     echo
     echo "==> Agendando"
 
-    # IA: coberta 24h por dia, menos sábado das 10:00 às 10:05.
-    "$OT" block schedule-except ia sat 10:00-10:05
+    # ai: coberto 24h por dia, menos sábado das 10:00 às 10:05.
+    "$OT" block schedule-except ai sat 10:00-10:05
 
-    # Atenção e vícios: o tempo todo, todos os dias.
-    "$OT" block schedule atencao daily 00:00-24:00
-    "$OT" block schedule vicios daily 00:00-24:00
+    # attention e vice: o tempo todo, todos os dias.
+    "$OT" block schedule attention daily 00:00-24:00
+    "$OT" block schedule vice daily 00:00-24:00
 
-    # Noite: dias de semana e domingo, a partir das 17h30.
-    "$OT" block schedule noite mon-fri 17:30-24:00
-    "$OT" block schedule noite sun 17:30-24:00
+    # evening: dias de semana e domingo, a partir das 17h30.
+    "$OT" block schedule evening mon-fri 17:30-24:00
+    "$OT" block schedule evening sun 17:30-24:00
 
     echo
     echo "Agendas aplicadas. O daemon liga e desliga sozinho a partir de agora."
