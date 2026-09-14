@@ -36,12 +36,50 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
 	"github.com/brunodcdo/open-turkey/internal/lock"
 	"github.com/spf13/cobra"
 )
+
+
+// suprimirAgendaAtual impede que a agenda religue um bloco que você acabou de
+// desligar.
+//
+// Sem isso, desligar um bloco agendado no meio da sua janela seria inútil: o
+// daemon veria a janela ainda aberta e o religaria no ciclo seguinte, cinco
+// segundos depois. No caso do "unlock" isso seria pior que inútil — você teria
+// digitado trezentos caracteres por nada.
+//
+// A supressão vale só até o fim da janela atual. A próxima janela volta a valer
+// normalmente, que é o comportamento esperado: você comprou o resto de hoje,
+// não o resto da semana.
+//
+// Devolve até quando a agenda ficou suprimida. O segundo retorno é false quando
+// o bloco não tem agenda, ou quando nenhuma janela estava aberta — nesses casos
+// não há nada a suprimir.
+func suprimirAgendaAtual(database *db.DB, nome string) (time.Time, bool, error) {
+	janelas, err := database.GetSchedulesByName(nome)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(janelas) == 0 {
+		return time.Time{}, false, nil
+	}
+
+	agora := time.Now()
+	if _, dentro := db.JanelaAtual(agora, janelas); !dentro {
+		return time.Time{}, false, nil
+	}
+
+	fim := db.FimDaJanela(agora, janelas)
+	if err := database.SetSuppression(nome, fim); err != nil {
+		return time.Time{}, false, err
+	}
+	return fim, true, nil
+}
 
 // ============================================================================
 // startCmd — Ativar um bloco de bloqueio
@@ -248,6 +286,16 @@ var stopCmd = &cobra.Command{
 			return err
 		}
 
+		// Se este bloco é agendado e a janela ainda está aberta, a agenda
+		// precisa ficar quieta até ela fechar — senão o daemon religa o bloco
+		// no próximo ciclo.
+		if fim, suprimiu, err := suprimirAgendaAtual(database, nomeBLoco); err != nil {
+			return err
+		} else if suprimiu {
+			fmt.Printf("A agenda deste bloco fica suspensa até %s; a próxima janela volta a valer normalmente.\n",
+				fim.Local().Format("15:04 de 02/01"))
+		}
+
 		// --- Passo 5: Reaplicar ou remover as camadas de bloqueio ---
 		// Após desativar um bloco, precisamos atualizar as camadas de bloqueio.
 		// Existem dois cenários possíveis:
@@ -344,6 +392,16 @@ var unlockCmd = &cobra.Command{
 		// --- Passo 7: Desafio bem-sucedido — desativar o bloco ---
 		if err := database.DeactivateBlock(nomeBLoco); err != nil {
 			return err
+		}
+
+		// Se este bloco é agendado e a janela ainda está aberta, a agenda
+		// precisa ficar quieta até ela fechar — senão o daemon religa o bloco
+		// no próximo ciclo.
+		if fim, suprimiu, err := suprimirAgendaAtual(database, nomeBLoco); err != nil {
+			return err
+		} else if suprimiu {
+			fmt.Printf("A agenda deste bloco fica suspensa até %s; a próxima janela volta a valer normalmente.\n",
+				fim.Local().Format("15:04 de 02/01"))
 		}
 
 		// --- Passo 8: Reaplicar ou remover camadas (mesma lógica do stop) ---

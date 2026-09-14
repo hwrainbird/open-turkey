@@ -102,6 +102,26 @@ func Run() error {
 // Isso garante m\u00e1xima resili\u00eancia \u2014 um erro no iptables n\u00e3o deve
 // impedir o bloqueio via /etc/hosts, por exemplo.
 func enforce(database *db.DB) error {
+	// Antes de olhar o que está ativo, deixamos a agenda alinhar o estado com o
+	// relógio: janela que abriu liga o bloco, janela que fechou desliga.
+	//
+	// Isso roda antes da leitura dos blocos ativos de propósito — assim uma
+	// janela que acabou de abrir já é enforçada neste mesmo ciclo, e não só
+	// cinco segundos depois.
+	mudancas, err := database.ReconcileSchedules(time.Now())
+	if err != nil {
+		// Falha de agenda não derruba o ciclo: as camadas ainda precisam ser
+		// verificadas para os blocos que já estavam ativos.
+		log.Printf("daemon: erro ao aplicar agendas: %v", err)
+	}
+	for _, m := range mudancas {
+		if m.Ativou {
+			log.Printf("daemon: bloco '%s' ativado pela agenda (%s)", m.Bloco, m.Janela)
+		} else {
+			log.Printf("daemon: bloco '%s' desativado — janela encerrada", m.Bloco)
+		}
+	}
+
 	// Buscamos todos os bloqueios ativos no banco de dados.
 	// Um bloqueio est\u00e1 ativo se o hor\u00e1rio atual est\u00e1 dentro do per\u00edodo configurado.
 	activeBlocks, err := database.GetActiveBlocks()

@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS active_blocks (
     activated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id   INTEGER NOT NULL,
+    weekday    INTEGER NOT NULL,
+    start_min  INTEGER NOT NULL,
+    end_min    INTEGER NOT NULL,
+    locked     BOOLEAN NOT NULL DEFAULT 1,
+    lock_chars INTEGER NOT NULL DEFAULT 300,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_block ON schedules(block_id);
+
+CREATE TABLE IF NOT EXISTS suppressions (
+    block_id INTEGER PRIMARY KEY,
+    until    DATETIME NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
 `
 
 // --------------------------------------------------------------------------
@@ -166,7 +185,55 @@ func OpenDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("erro ao criar tabelas do banco: %w", err)
 	}
 
+	// "CREATE TABLE IF NOT EXISTS" só cria tabelas novas — ele não acrescenta
+	// colunas a uma tabela que já existe. Bancos criados por versões anteriores
+	// precisam da coluna nova explicitamente.
+	if err := garantirColuna(conn, "active_blocks", "by_schedule", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
 	return &DB{conn: conn}, nil
+}
+
+// garantirColuna acrescenta uma coluna a uma tabela existente, se ela ainda
+// não estiver lá.
+//
+// O SQLite não tem "ADD COLUMN IF NOT EXISTS": rodar o ALTER duas vezes dá
+// erro. Então perguntamos primeiro, via PRAGMA table_info, quais colunas a
+// tabela já tem. Isso mantém a abertura do banco idempotente — pode rodar
+// quantas vezes for, o resultado é o mesmo.
+func garantirColuna(conn *sql.DB, tabela, coluna, definicao string) error {
+	rows, err := conn.Query(fmt.Sprintf("PRAGMA table_info(%s)", tabela))
+	if err != nil {
+		return fmt.Errorf("erro ao inspecionar a tabela '%s': %w", tabela, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			nome, tipo string
+			notNull    int
+			padrao     sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &nome, &tipo, &notNull, &padrao, &pk); err != nil {
+			return fmt.Errorf("erro ao ler colunas da tabela '%s': %w", tabela, err)
+		}
+		if nome == coluna {
+			return nil // já existe, nada a fazer
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("erro ao iterar colunas da tabela '%s': %w", tabela, err)
+	}
+
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tabela, coluna, definicao)
+	if _, err := conn.Exec(stmt); err != nil {
+		return fmt.Errorf("erro ao acrescentar a coluna '%s' em '%s': %w", coluna, tabela, err)
+	}
+	return nil
 }
 
 // Close fecha a conexão com o banco de dados.

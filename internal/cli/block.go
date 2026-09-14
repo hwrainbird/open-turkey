@@ -96,7 +96,8 @@ func autorizarRemocao(database *db.DB, name string) error {
 	}
 
 	fmt.Printf("O bloco '%s' está travado.\n", name)
-	fmt.Println("Remover itens exige o desafio de digitação.")
+	fmt.Println("Afrouxar um bloco travado — remover itens ou mexer na agenda —")
+	fmt.Println("exige o desafio de digitação.")
 	fmt.Println("Ao contrário de 'unlock', o bloco continua ativo e travado depois.")
 
 	sucesso, err := lock.RunChallenge(detalhe.LockChars)
@@ -504,6 +505,29 @@ var blockInfoCmd = &cobra.Command{
 
 		// Exibimos a lista de sites bloqueados.
 		// Separamos com uma linha em branco para melhorar a legibilidade.
+		// A agenda muda quando o bloco liga e desliga sozinho, então precisa
+		// aparecer aqui: sem isso, um bloco inativo agendado parece um bloco
+		// esquecido, e um bloco ativo parece ter sido ligado na mão.
+		janelas, err := database.GetSchedulesByName(block.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println()
+		if len(janelas) > 0 {
+			fmt.Println("Agenda (o daemon liga e desliga sozinho):")
+			for _, j := range janelas {
+				trava := "sem trava"
+				if j.Locked {
+					trava = fmt.Sprintf("trava de %d caracteres", j.LockChars)
+				}
+				fmt.Printf("  - %s  (%s)\n", j.Descreve(), trava)
+			}
+		} else {
+			fmt.Println("Agenda: nenhuma (só liga e desliga na mão)")
+		}
+
 		fmt.Println()
 		if len(block.Sites) > 0 {
 			fmt.Println("Sites bloqueados:")
