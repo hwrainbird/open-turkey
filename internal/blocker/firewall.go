@@ -57,10 +57,14 @@ package blocker
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // chainName é o nome da nossa chain customizada no iptables.
@@ -141,34 +145,36 @@ func ApplyFirewall(domains []string) error {
 	}
 
 	// --- Passo 4: Resolver domínios e adicionar regras DROP ---
-	// Para cada domínio (ex: "youtube.com"), precisamos descobrir quais
-	// endereços IP ele usa. Um domínio pode ter vários IPs (ex: o Google
-	// tem dezenas). Bloqueamos todos eles.
-	for _, domain := range domains {
-		domain = NormalizarDominio(domain)
-		if domain == "" {
-			continue
-		}
+	//
+	// As consultas DNS são feitas em paralelo e com prazo. Em série e sem
+	// prazo, uma lista grande trava o daemon: cada domínio morto espera o
+	// tempo cheio do resolvedor, e uma lista de mil e seiscentos domínios
+	// (boa parte deles extinta) levava minutos antes de a primeira regra
+	// entrar. Quem estivesse olhando concluiria, com razão, que o serviço
+	// tinha travado.
+	ipsPorDominio := resolverEmParalelo(domains)
 
-		// net.LookupHost faz uma consulta DNS e retorna todos os IPs
-		// associados ao domínio. Isso é equivalente a rodar "nslookup" ou
-		// "dig" no terminal.
-		ips, err := net.LookupHost(domain)
-		if err != nil {
-			// Se não conseguimos resolver o domínio, não é um erro fatal.
-			// O domínio pode estar temporariamente fora do ar, ou pode ser
-			// um domínio inválido. Apenas pulamos e continuamos com os outros.
-			// Em um app de produção, seria bom logar isso para debug.
-			continue
-		}
+	// Endereços repetidos viram uma regra só. Domínios abandonados costumam
+	// apontar todos para o mesmo serviço de estacionamento, então a mesma
+	// dezena de IPs aparece centenas de vezes numa lista grande — e cada
+	// regra duplicada é trabalho extra para o kernel em todo pacote que sai.
+	vistos := map[string]bool{}
 
-		for _, ip := range ips {
-			// Filtramos apenas endereços IPv4. Endereços IPv6 contêm ":"
-			// (ex: "2607:f8b0:4004::64") enquanto IPv4 não (ex: "142.250.80.46").
-			// Como usamos apenas iptables (não ip6tables), ignoramos IPv6.
-			if strings.Contains(ip, ":") {
+	// Ordenamos para que a mesma lista produza sempre a mesma sequência de
+	// regras. Sem isso, a ordem viria do mapa (aleatória em Go) e duas
+	// aplicações seguidas da mesma lista gerariam chains diferentes.
+	dominiosOrdenados := make([]string, 0, len(ipsPorDominio))
+	for d := range ipsPorDominio {
+		dominiosOrdenados = append(dominiosOrdenados, d)
+	}
+	sort.Strings(dominiosOrdenados)
+
+	for _, domain := range dominiosOrdenados {
+		for _, ip := range ipsPorDominio[domain] {
+			if vistos[ip] {
 				continue
 			}
+			vistos[ip] = true
 
 			// -A adiciona (append) a regra ao final da chain
 			// -d especifica o IP de destino (destination)
@@ -355,4 +361,97 @@ func runIptablesOutput(args ...string) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// =============================================================================
+// Resolução de nomes
+// =============================================================================
+
+// paralelismoDNS é quantas consultas acontecem ao mesmo tempo.
+//
+// Trinta e dois é um meio-termo: rápido o bastante para uma lista de milhares
+// de domínios terminar em segundos, e comedido o bastante para não parecer um
+// ataque ao resolvedor de DNS da casa — alguns roteadores domésticos começam a
+// descartar consultas bem antes disso.
+const paralelismoDNS = 32
+
+// timeoutDNS é o prazo de cada consulta.
+//
+// Existe por causa dos domínios mortos, que numa lista herdada de outra
+// ferramenta são a maioria. Sem prazo, cada um deles segura uma posição da
+// fila pelo tempo padrão do resolvedor, com novas tentativas. Três segundos é
+// generoso para um domínio vivo e barato para um morto.
+const timeoutDNS = 3 * time.Second
+
+// resolverEmParalelo devolve os endereços IPv4 de cada domínio.
+//
+// Domínios que não resolvem simplesmente não aparecem no resultado. Não é
+// erro: o domínio pode estar fora do ar, ter sido abandonado, ou nunca ter
+// existido. As outras camadas de bloqueio seguem valendo para ele de qualquer
+// forma — o /etc/hosts não depende de resolver nada.
+func resolverEmParalelo(domains []string) map[string][]string {
+	// Limpamos e tiramos repetidos antes de sair consultando: a mesma lista
+	// pode citar o mesmo domínio em blocos diferentes.
+	pendentes := make([]string, 0, len(domains))
+	jaNaFila := map[string]bool{}
+	for _, d := range domains {
+		d = NormalizarDominio(d)
+		if d == "" || jaNaFila[d] {
+			continue
+		}
+		jaNaFila[d] = true
+		pendentes = append(pendentes, d)
+	}
+
+	resultado := make(map[string][]string, len(pendentes))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	fila := make(chan string)
+
+	trabalhadores := paralelismoDNS
+	if len(pendentes) < trabalhadores {
+		trabalhadores = len(pendentes)
+	}
+
+	for i := 0; i < trabalhadores; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for dominio := range fila {
+				ctx, cancel := context.WithTimeout(context.Background(), timeoutDNS)
+				enderecos, err := net.DefaultResolver.LookupHost(ctx, dominio)
+				cancel()
+				if err != nil {
+					continue
+				}
+
+				// Só IPv4: o bloqueio usa iptables, e endereços IPv6 (que
+				// contêm ":") precisariam do ip6tables. Essa limitação está
+				// documentada no cabeçalho deste arquivo.
+				var v4 []string
+				for _, e := range enderecos {
+					if !strings.Contains(e, ":") {
+						v4 = append(v4, e)
+					}
+				}
+				if len(v4) == 0 {
+					continue
+				}
+				sort.Strings(v4)
+
+				mu.Lock()
+				resultado[dominio] = v4
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, d := range pendentes {
+		fila <- d
+	}
+	close(fila)
+	wg.Wait()
+
+	return resultado
 }

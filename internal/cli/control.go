@@ -36,12 +36,74 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
 	"github.com/brunodcdo/open-turkey/internal/lock"
 	"github.com/spf13/cobra"
 )
+
+
+// politicaAtual monta a política de navegador correspondente ao estado atual.
+//
+// GetAllBlockedDomains já devolve só os domínios dos blocos em modo bloqueio,
+// que é o que /etc/hosts e firewall precisam. O navegador precisa de mais:
+// saber se algum bloco ativo está em modo lista-branca e, se estiver, o que
+// pode passar.
+func politicaAtual(database *db.DB) (blocker.Politica, error) {
+	ativos, err := database.GetActiveBlocks()
+	if err != nil {
+		return blocker.Politica{}, err
+	}
+
+	var politica blocker.Politica
+	for _, b := range ativos {
+		if b.Mode == db.ModoListaBranca {
+			politica.ListaBranca = true
+			politica.Permitidos = append(politica.Permitidos, b.Sites...)
+		} else {
+			politica.Bloqueados = append(politica.Bloqueados, b.Sites...)
+		}
+	}
+	return politica, nil
+}
+
+// suprimirAgendaAtual impede que a agenda religue um bloco que você acabou de
+// desligar.
+//
+// Sem isso, desligar um bloco agendado no meio da sua janela seria inútil: o
+// daemon veria a janela ainda aberta e o religaria no ciclo seguinte, cinco
+// segundos depois. No caso do "unlock" isso seria pior que inútil — você teria
+// digitado trezentos caracteres por nada.
+//
+// A supressão vale só até o fim da janela atual. A próxima janela volta a valer
+// normalmente, que é o comportamento esperado: você comprou o resto de hoje,
+// não o resto da semana.
+//
+// Devolve até quando a agenda ficou suprimida. O segundo retorno é false quando
+// o bloco não tem agenda, ou quando nenhuma janela estava aberta — nesses casos
+// não há nada a suprimir.
+func suprimirAgendaAtual(database *db.DB, nome string) (time.Time, bool, error) {
+	janelas, err := database.GetSchedulesByName(nome)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(janelas) == 0 {
+		return time.Time{}, false, nil
+	}
+
+	agora := time.Now()
+	if _, dentro := db.JanelaAtual(agora, janelas); !dentro {
+		return time.Time{}, false, nil
+	}
+
+	fim := db.FimDaJanela(agora, janelas)
+	if err := database.SetSuppression(nome, fim); err != nil {
+		return time.Time{}, false, err
+	}
+	return fim, true, nil
+}
 
 // ============================================================================
 // startCmd — Ativar um bloco de bloqueio
@@ -170,7 +232,11 @@ var startCmd = &cobra.Command{
 
 		// Camada 3: Políticas de navegador — bloqueia diretamente no Firefox/Chrome/Chromium.
 		// O navegador mostra uma página "Bloqueado pela política da organização".
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
+		politica, err := politicaAtual(database)
+		if err != nil {
+			return err
+		}
+		if err := blocker.ApplyBrowserPolicies(politica); err != nil {
 			return fmt.Errorf("erro ao aplicar políticas de navegador: %w", err)
 		}
 
@@ -246,6 +312,16 @@ var stopCmd = &cobra.Command{
 		// --- Passo 4: Desativar o bloco no banco de dados ---
 		if err := database.DeactivateBlock(nomeBLoco); err != nil {
 			return err
+		}
+
+		// Se este bloco é agendado e a janela ainda está aberta, a agenda
+		// precisa ficar quieta até ela fechar — senão o daemon religa o bloco
+		// no próximo ciclo.
+		if fim, suprimiu, err := suprimirAgendaAtual(database, nomeBLoco); err != nil {
+			return err
+		} else if suprimiu {
+			fmt.Printf("A agenda deste bloco fica suspensa até %s; a próxima janela volta a valer normalmente.\n",
+				fim.Local().Format("15:04 de 02/01"))
 		}
 
 		// --- Passo 5: Reaplicar ou remover as camadas de bloqueio ---
@@ -344,6 +420,16 @@ var unlockCmd = &cobra.Command{
 		// --- Passo 7: Desafio bem-sucedido — desativar o bloco ---
 		if err := database.DeactivateBlock(nomeBLoco); err != nil {
 			return err
+		}
+
+		// Se este bloco é agendado e a janela ainda está aberta, a agenda
+		// precisa ficar quieta até ela fechar — senão o daemon religa o bloco
+		// no próximo ciclo.
+		if fim, suprimiu, err := suprimirAgendaAtual(database, nomeBLoco); err != nil {
+			return err
+		} else if suprimiu {
+			fmt.Printf("A agenda deste bloco fica suspensa até %s; a próxima janela volta a valer normalmente.\n",
+				fim.Local().Format("15:04 de 02/01"))
 		}
 
 		// --- Passo 8: Reaplicar ou remover camadas (mesma lógica do stop) ---
@@ -519,7 +605,11 @@ func reaplicarOuRemoverCamadas(database *db.DB) error {
 			return fmt.Errorf("erro ao reaplicar bloqueio no firewall: %w", err)
 		}
 
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
+		politica, err := politicaAtual(database)
+		if err != nil {
+			return err
+		}
+		if err := blocker.ApplyBrowserPolicies(politica); err != nil {
 			return fmt.Errorf("erro ao reaplicar políticas de navegador: %w", err)
 		}
 
