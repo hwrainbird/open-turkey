@@ -143,12 +143,28 @@ func enforce(database *db.DB) error {
 	// Coletamos todos os dom\u00ednios e aplicativos de todos os bloqueios ativos.
 	// V\u00e1rios bloqueios podem estar ativos ao mesmo tempo (ex: "redes sociais"
 	// e "jogos"), ent\u00e3o precisamos unificar as listas.
-	var domains []string
+	// Separamos por sentido. Os sites de um bloco em modo lista-branca são o
+	// que PODE passar — mandá-los para o /etc/hosts ou para o firewall
+	// bloquearia justamente o que deveria continuar acessível.
+	var domains []string    // bloqueados: valem em todas as camadas
+	var permitidos []string // lista-branca: só faz sentido no navegador
 	var apps []string
+	listaBranca := false
 
 	for _, block := range activeBlocks {
-		domains = append(domains, block.Sites...)
+		if block.Mode == db.ModoListaBranca {
+			listaBranca = true
+			permitidos = append(permitidos, block.Sites...)
+		} else {
+			domains = append(domains, block.Sites...)
+		}
 		apps = append(apps, block.Apps...)
+	}
+
+	politica := blocker.Politica{
+		Bloqueados:  domains,
+		Permitidos:  permitidos,
+		ListaBranca: listaBranca,
 	}
 
 	// --- Camada 1: /etc/hosts ---
@@ -175,9 +191,9 @@ func enforce(database *db.DB) error {
 	// --- Camada 3: Pol\u00edticas de navegador ---
 	// Verificamos se as pol\u00edticas do Chrome/Firefox est\u00e3o configuradas.
 	// Essas pol\u00edticas impedem o acesso mesmo se o usu\u00e1rio usar DNS alternativo.
-	if !blocker.IsBrowserPoliciesApplied(domains) {
+	if !blocker.IsBrowserPoliciesApplied(politica) {
 		log.Println("daemon: pol\u00edticas de navegador desatualizadas, reaplicando")
-		if err := blocker.ApplyBrowserPolicies(domains); err != nil {
+		if err := blocker.ApplyBrowserPolicies(politica); err != nil {
 			log.Printf("daemon: erro ao aplicar pol\u00edticas de navegador: %v", err)
 		}
 	}

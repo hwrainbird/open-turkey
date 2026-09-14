@@ -45,6 +45,30 @@ import (
 )
 
 
+// politicaAtual monta a política de navegador correspondente ao estado atual.
+//
+// GetAllBlockedDomains já devolve só os domínios dos blocos em modo bloqueio,
+// que é o que /etc/hosts e firewall precisam. O navegador precisa de mais:
+// saber se algum bloco ativo está em modo lista-branca e, se estiver, o que
+// pode passar.
+func politicaAtual(database *db.DB) (blocker.Politica, error) {
+	ativos, err := database.GetActiveBlocks()
+	if err != nil {
+		return blocker.Politica{}, err
+	}
+
+	var politica blocker.Politica
+	for _, b := range ativos {
+		if b.Mode == db.ModoListaBranca {
+			politica.ListaBranca = true
+			politica.Permitidos = append(politica.Permitidos, b.Sites...)
+		} else {
+			politica.Bloqueados = append(politica.Bloqueados, b.Sites...)
+		}
+	}
+	return politica, nil
+}
+
 // suprimirAgendaAtual impede que a agenda religue um bloco que você acabou de
 // desligar.
 //
@@ -208,7 +232,11 @@ var startCmd = &cobra.Command{
 
 		// Camada 3: Políticas de navegador — bloqueia diretamente no Firefox/Chrome/Chromium.
 		// O navegador mostra uma página "Bloqueado pela política da organização".
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
+		politica, err := politicaAtual(database)
+		if err != nil {
+			return err
+		}
+		if err := blocker.ApplyBrowserPolicies(politica); err != nil {
 			return fmt.Errorf("erro ao aplicar políticas de navegador: %w", err)
 		}
 
@@ -577,7 +605,11 @@ func reaplicarOuRemoverCamadas(database *db.DB) error {
 			return fmt.Errorf("erro ao reaplicar bloqueio no firewall: %w", err)
 		}
 
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
+		politica, err := politicaAtual(database)
+		if err != nil {
+			return err
+		}
+		if err := blocker.ApplyBrowserPolicies(politica); err != nil {
 			return fmt.Errorf("erro ao reaplicar políticas de navegador: %w", err)
 		}
 

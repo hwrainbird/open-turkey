@@ -115,6 +115,30 @@ const (
 // Funções públicas — a interface que o resto do Open Turkey usa
 // =============================================================================
 
+// montarPolitica traduz uma Politica para os quatro conjuntos que os arquivos
+// de política precisam: bloqueios e exceções do Firefox, bloqueios e permitidos
+// do Chromium.
+//
+// Existe para que ApplyBrowserPolicies e IsBrowserPoliciesApplied não possam
+// divergir. Se cada uma montasse as listas por conta própria, bastaria uma
+// diferença sutil entre elas para o daemon concluir que o arquivo está sempre
+// desatualizado e reescrevê-lo a cada 5 segundos, para sempre.
+func montarPolitica(p Politica) (padroesFirefox, excecoesFirefox, filtrosChromium, permitidosChromium []string) {
+	if !p.ListaBranca {
+		return gerarPadroesFirefox(p.Bloqueados), nil, gerarFiltrosChromium(p.Bloqueados), nil
+	}
+
+	// Modo lista-branca: bloqueia-se tudo e abre-se exceção para a lista.
+	// Os domínios bloqueados de propósito saem da lista-branca antes, porque
+	// no Chromium a permissão vence o bloqueio.
+	permitidos := SubtrairBloqueados(p.Permitidos, p.Bloqueados)
+
+	return []string{TodasAsURLsFirefox},
+		GerarExcecoesFirefox(permitidos),
+		[]string{TodasAsURLsChromium},
+		GerarPermitidosChromium(permitidos)
+}
+
 // ApplyBrowserPolicies cria as políticas de bloqueio para todos os navegadores.
 //
 // ATENÇÃO — Firefox e Chromium usam formatos de padrão DIFERENTES, e tratá-los
@@ -131,33 +155,32 @@ const (
 //     filtro simples "dominio.com" já casa o domínio raiz E todos os subdomínios
 //     E todos os caminhos. Ver gerarFiltrosChromium.
 //     Ref.: https://www.chromium.org/administrators/url-blocklist-filter-format/
-func ApplyBrowserPolicies(domains []string) error {
+func ApplyBrowserPolicies(p Politica) error {
 	// Passo 1: Montar os padrões/filtros — um conjunto por formato.
-	padroesFirefox := gerarPadroesFirefox(domains)
-	filtrosChromium := gerarFiltrosChromium(domains)
+	padroesFirefox, excecoesFirefox, filtrosChromium, permitidosChromium := montarPolitica(p)
 
 	// Passo 2: Aplicar a política do Firefox.
 	// O Firefox usa um formato próprio com "WebsiteFilter" dentro de "policies".
 	// Como o arquivo pode já existir com outras políticas, fazemos merge.
-	if err := aplicarPoliticaFirefox(padroesFirefox); err != nil {
+	if err := aplicarPoliticaFirefox(padroesFirefox, excecoesFirefox); err != nil {
 		return fmt.Errorf("erro ao aplicar política do Firefox: %w", err)
 	}
 
 	// Passo 3: Aplicar a política do Chromium.
 	// O Chromium usa "URLBlocklist" e aceita arquivos separados por política.
-	if err := aplicarPoliticaChromium(chromiumPolicyPath, filtrosChromium); err != nil {
+	if err := aplicarPoliticaChromium(chromiumPolicyPath, filtrosChromium, permitidosChromium); err != nil {
 		return fmt.Errorf("erro ao aplicar política do Chromium: %w", err)
 	}
 
 	// Passo 4: Aplicar a política do Google Chrome.
 	// O Chrome usa o mesmo formato do Chromium, mas em diretório diferente.
-	if err := aplicarPoliticaChromium(chromePolicyPath, filtrosChromium); err != nil {
+	if err := aplicarPoliticaChromium(chromePolicyPath, filtrosChromium, permitidosChromium); err != nil {
 		return fmt.Errorf("erro ao aplicar política do Google Chrome: %w", err)
 	}
 
 	// Passo 5: Aplicar a política do Brave.
 	// O Brave também usa o formato do Chromium, em /etc/brave/.
-	if err := aplicarPoliticaChromium(bravePolicyPath, filtrosChromium); err != nil {
+	if err := aplicarPoliticaChromium(bravePolicyPath, filtrosChromium, permitidosChromium); err != nil {
 		return fmt.Errorf("erro ao aplicar política do Brave: %w", err)
 	}
 
@@ -211,13 +234,12 @@ func RemoveBrowserPolicies() error {
 //
 // Isso é importante para detectar se alguém editou manualmente os arquivos
 // de política tentando burlar o bloqueio.
-func IsBrowserPoliciesApplied(domains []string) bool {
+func IsBrowserPoliciesApplied(p Politica) bool {
 	// Montamos os padrões/filtros esperados — um conjunto por formato, igual
 	// ao que ApplyBrowserPolicies grava. Conferir o Chromium contra o formato
 	// do Firefox (ou vice-versa) faria o daemon achar que a política está
 	// sempre divergente e reaplicá-la a cada 5s sem necessidade.
-	padroesFirefox := gerarPadroesFirefox(domains)
-	filtrosChromium := gerarFiltrosChromium(domains)
+	padroesFirefox, excecoesFirefox, filtrosChromium, permitidosChromium := montarPolitica(p)
 
 	if len(padroesFirefox) == 0 || len(filtrosChromium) == 0 {
 		return false
@@ -228,7 +250,7 @@ func IsBrowserPoliciesApplied(domains []string) bool {
 	// o que indica que o Firefox está instalado no sistema.
 	dirFirefox := filepath.Dir(firefoxPolicyPath)
 	if diretorioExiste(dirFirefox) {
-		if !verificarPoliticaFirefox(padroesFirefox) {
+		if !verificarPoliticaFirefox(padroesFirefox, excecoesFirefox) {
 			return false
 		}
 	}
@@ -237,7 +259,7 @@ func IsBrowserPoliciesApplied(domains []string) bool {
 	// Mesmo raciocínio — só verificamos se o diretório pai existe.
 	dirChromium := filepath.Dir(chromiumPolicyPath)
 	if diretorioExiste(dirChromium) {
-		if !verificarPoliticaChromium(chromiumPolicyPath, filtrosChromium) {
+		if !verificarPoliticaChromium(chromiumPolicyPath, filtrosChromium, permitidosChromium) {
 			return false
 		}
 	}
@@ -245,7 +267,7 @@ func IsBrowserPoliciesApplied(domains []string) bool {
 	// Verificação do Google Chrome:
 	dirChrome := filepath.Dir(chromePolicyPath)
 	if diretorioExiste(dirChrome) {
-		if !verificarPoliticaChromium(chromePolicyPath, filtrosChromium) {
+		if !verificarPoliticaChromium(chromePolicyPath, filtrosChromium, permitidosChromium) {
 			return false
 		}
 	}
@@ -253,7 +275,7 @@ func IsBrowserPoliciesApplied(domains []string) bool {
 	// Verificação do Brave:
 	dirBrave := filepath.Dir(bravePolicyPath)
 	if diretorioExiste(dirBrave) {
-		if !verificarPoliticaChromium(bravePolicyPath, filtrosChromium) {
+		if !verificarPoliticaChromium(bravePolicyPath, filtrosChromium, permitidosChromium) {
 			return false
 		}
 	}
@@ -459,7 +481,7 @@ func DominioValido(s string) bool {
 // Se o arquivo já existe, precisamos fazer MERGE: ler o JSON existente,
 // adicionar nossos padrões ao array "Block" (sem duplicar), e gravar de volta.
 // Se o arquivo não existe, criamos do zero.
-func aplicarPoliticaFirefox(padroes []string) error {
+func aplicarPoliticaFirefox(padroes, excecoes []string) error {
 	// Passo 1: Criar o diretório de políticas se não existir.
 	// os.MkdirAll cria todos os diretórios no caminho, similar ao "mkdir -p"
 	// no terminal. Se já existem, não faz nada (idempotente).
@@ -510,7 +532,17 @@ func aplicarPoliticaFirefox(padroes []string) error {
 	}
 
 	// Passo 6: Remontar a estrutura JSON e gravar o arquivo.
+	//
+	// "Exceptions" é o que torna o modo lista-branca possível: com Block
+	// contendo "<all_urls>", tudo é bloqueado, e só o que estiver aqui passa.
+	// No modo normal a lista vem vazia e a chave é removida, para não deixar
+	// resto de uma configuração anterior no arquivo.
 	websiteFilter["Block"] = blocksFinais
+	if len(excecoes) > 0 {
+		websiteFilter["Exceptions"] = append([]string(nil), excecoes...)
+	} else {
+		delete(websiteFilter, "Exceptions")
+	}
 	policies["WebsiteFilter"] = websiteFilter
 	politicaRaiz["policies"] = policies
 
@@ -581,7 +613,7 @@ func removerPoliticaFirefox() error {
 // igualdade de conjunto: nem padrão faltando, nem padrão a mais. Se houver
 // divergência em qualquer direção (inclusive entrada extra/adulterada), retorna
 // false para o daemon reaplicar.
-func verificarPoliticaFirefox(padroesEsperados []string) bool {
+func verificarPoliticaFirefox(padroesEsperados, excecoesEsperadas []string) bool {
 	// Ler e decodificar o arquivo de políticas.
 	conteudo, err := os.ReadFile(firefoxPolicyPath)
 	if err != nil {
@@ -605,8 +637,12 @@ func verificarPoliticaFirefox(padroesEsperados []string) bool {
 	}
 
 	blocksExistentes := extrairStringsDeInterface(websiteFilter["Block"])
+	if !mesmoConjunto(blocksExistentes, padroesEsperados) {
+		return false
+	}
 
-	return mesmoConjunto(blocksExistentes, padroesEsperados)
+	excecoesExistentes := extrairStringsDeInterface(websiteFilter["Exceptions"])
+	return mesmoConjunto(excecoesExistentes, excecoesEsperadas)
 }
 
 // =============================================================================
@@ -630,7 +666,7 @@ func verificarPoliticaFirefox(padroesEsperados []string) bool {
 //
 // O parâmetro caminhoArquivo permite reutilizar essa função para Chromium,
 // Chrome e Brave, que usam diretórios diferentes mas o mesmo formato.
-func aplicarPoliticaChromium(caminhoArquivo string, padroes []string) error {
+func aplicarPoliticaChromium(caminhoArquivo string, padroes, permitidos []string) error {
 	// Passo 1: Criar o diretório de políticas se não existir.
 	// Se o diretório pai não existe, provavelmente o navegador não está
 	// instalado. Mesmo assim, criamos o diretório — se o usuário instalar
@@ -647,6 +683,15 @@ func aplicarPoliticaChromium(caminhoArquivo string, padroes []string) error {
 		"URLBlocklist": padroes,
 	}
 
+	// URLAllowlist ganha de URLBlocklist no Chromium. É isso que faz o modo
+	// lista-branca funcionar: bloqueia-se "*" e abre-se exceção para o que
+	// pode passar. Também é por isso que quem monta as listas precisa tirar
+	// da lista-branca qualquer domínio que esteja bloqueado de propósito —
+	// senão a exceção venceria o bloqueio.
+	if len(permitidos) > 0 {
+		politica["URLAllowlist"] = permitidos
+	}
+
 	return gravarJSON(caminhoArquivo, politica)
 }
 
@@ -657,7 +702,7 @@ func aplicarPoliticaChromium(caminhoArquivo string, padroes []string) error {
 // a cada ApplyBrowserPolicies. Por isso o estado correto é igualdade de conjunto:
 // qualquer divergência (filtro faltando OU entrada extra/adulterada) retorna
 // false para o daemon reaplicar.
-func verificarPoliticaChromium(caminhoArquivo string, padroesEsperados []string) bool {
+func verificarPoliticaChromium(caminhoArquivo string, padroesEsperados, permitidosEsperados []string) bool {
 	conteudo, err := os.ReadFile(caminhoArquivo)
 	if err != nil {
 		return false
@@ -669,8 +714,12 @@ func verificarPoliticaChromium(caminhoArquivo string, padroesEsperados []string)
 	}
 
 	blocksExistentes := extrairStringsDeInterface(politica["URLBlocklist"])
+	if !mesmoConjunto(blocksExistentes, padroesEsperados) {
+		return false
+	}
 
-	return mesmoConjunto(blocksExistentes, padroesEsperados)
+	permitidosExistentes := extrairStringsDeInterface(politica["URLAllowlist"])
+	return mesmoConjunto(permitidosExistentes, permitidosEsperados)
 }
 
 // =============================================================================

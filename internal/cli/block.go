@@ -136,6 +136,15 @@ var blockCmd = &cobra.Command{
 var blockCreateCmd = &cobra.Command{
 	Use:   "create [nome]",
 	Short: "Criar um novo bloco",
+	Long: `Cria um bloco vazio, pronto para receber sites e apps.
+
+Com --allow o sentido da lista se inverte: em vez de bloquear os sites
+listados, o bloco bloqueia TUDO e deixa passar só o que estiver na lista.
+
+O modo lista-branca vale apenas dentro do navegador. É onde ele pode ser feito
+com segurança: negar tudo no firewall quebraria os próprios sites liberados
+assim que o IP deles mudasse, e numa máquina sem acesso de administrador isso
+seria irreversível. O terminal, o ssh e o git não são afetados.`,
 	// cobra.ExactArgs(1) garante que o usuário passe exatamente 1 argumento.
 	// Se passar 0 ou mais de 1, o Cobra exibe uma mensagem de erro automática.
 	Args: cobra.ExactArgs(1),
@@ -154,7 +163,12 @@ var blockCreateCmd = &cobra.Command{
 		defer database.Close()
 
 		// Chamamos a função do pacote db para criar o bloco.
-		if err := database.CreateBlock(name); err != nil {
+		modo := db.ModoBloqueio
+		if listaBranca, _ := cmd.Flags().GetBool("allow"); listaBranca {
+			modo = db.ModoListaBranca
+		}
+
+		if err := database.CreateBlockMode(name, modo); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 			os.Exit(1)
 		}
@@ -484,6 +498,9 @@ var blockInfoCmd = &cobra.Command{
 
 		// Exibimos as informações básicas do bloco.
 		fmt.Printf("Bloco: %s\n", block.Name)
+		if block.Mode == db.ModoListaBranca {
+			fmt.Println("Modo: LISTA-BRANCA — bloqueia tudo no navegador, exceto os sites abaixo")
+		}
 		fmt.Printf("Criado em: %s\n", block.CreatedAt)
 
 		// Montamos a linha de status baseada nos campos Active e Locked.
@@ -607,6 +624,8 @@ func init() {
 	rootCmd.AddCommand(blockCmd)
 
 	// Adicionamos todos os subcomandos como filhos de "block".
+	blockCreateCmd.Flags().Bool("allow", false, "Lista-branca: bloqueia tudo e libera só os sites listados (só no navegador)")
+
 	blockCmd.AddCommand(blockCreateCmd)
 	blockCmd.AddCommand(blockAddSiteCmd)
 	blockCmd.AddCommand(blockRemoveSiteCmd)

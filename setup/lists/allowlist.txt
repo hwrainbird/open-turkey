@@ -1,0 +1,16 @@
+127.0.0.1
+ameli.fr
+devdocs.io
+doctolib.fr
+eurostar.com
+file://*.*
+google.fr/maps
+gouv.fr
+gstatic.com
+ilevia.fr
+laposte.fr
+localhost
+net-entreprises.fr
+sncf-connect.com
+urssaf.fr
+wise.com

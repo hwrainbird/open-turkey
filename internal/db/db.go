@@ -32,6 +32,20 @@ type DB struct {
 	conn *sql.DB
 }
 
+// ModoBloqueio e ModoListaBranca são os dois sentidos possíveis de um bloco.
+//
+// ModoBloqueio é o normal: os sites listados são bloqueados.
+// ModoListaBranca inverte: tudo é bloqueado e só os sites listados passam.
+//
+// A distinção importa muito além do navegador. Os sites de um bloco em modo
+// lista-branca NÃO podem ir para o /etc/hosts nem para o firewall — lá eles
+// seriam lidos como "bloqueie isto", ou seja, exatamente o contrário do que a
+// lista quer dizer.
+const (
+	ModoBloqueio    = "block"
+	ModoListaBranca = "allow"
+)
+
 // Block representa um bloco na listagem geral.
 // SiteCount e AppCount evitam carregar todos os domínios/apps só para contar.
 type Block struct {
@@ -47,6 +61,7 @@ type Block struct {
 type BlockDetail struct {
 	ID        int
 	Name      string
+	Mode      string
 	Sites     []string
 	Apps      []string
 	Active    bool
@@ -59,6 +74,7 @@ type BlockDetail struct {
 // É usado pelo daemon para saber o que bloquear.
 type ActiveBlockDetail struct {
 	BlockName string
+	Mode      string
 	Sites     []string
 	Apps      []string
 	Locked    bool
@@ -192,6 +208,10 @@ func OpenDB(dbPath string) (*DB, error) {
 		conn.Close()
 		return nil, err
 	}
+	if err := garantirColuna(conn, "blocks", "mode", "TEXT NOT NULL DEFAULT 'block'"); err != nil {
+		conn.Close()
+		return nil, err
+	}
 
 	return &DB{conn: conn}, nil
 }
@@ -252,7 +272,16 @@ func (d *DB) Close() error {
 // CreateBlock cria um novo bloco com o nome fornecido.
 // O nome precisa ser único — se já existir, o banco retorna erro.
 func (d *DB) CreateBlock(name string) error {
-	_, err := d.conn.Exec("INSERT INTO blocks (name) VALUES (?)", name)
+	return d.CreateBlockMode(name, ModoBloqueio)
+}
+
+// CreateBlockMode cria um bloco escolhendo o sentido da lista de sites.
+func (d *DB) CreateBlockMode(name, mode string) error {
+	if mode != ModoBloqueio && mode != ModoListaBranca {
+		return fmt.Errorf("modo de bloco inválido: %q", mode)
+	}
+
+	_, err := d.conn.Exec("INSERT INTO blocks (name, mode) VALUES (?, ?)", name, mode)
 	if err != nil {
 		// Se o erro for de UNIQUE constraint, damos uma mensagem mais clara.
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -477,6 +506,7 @@ func (d *DB) GetBlock(name string) (*BlockDetail, error) {
 		SELECT
 			b.id,
 			b.name,
+			COALESCE(b.mode, 'block'),
 			b.created_at,
 			CASE WHEN ab.id IS NOT NULL THEN 1 ELSE 0 END AS active,
 			COALESCE(ab.locked, 0) AS locked,
@@ -487,6 +517,7 @@ func (d *DB) GetBlock(name string) (*BlockDetail, error) {
 	`, name).Scan(
 		&detail.ID,
 		&detail.Name,
+		&detail.Mode,
 		&detail.CreatedAt,
 		&detail.Active,
 		&detail.Locked,
@@ -643,7 +674,7 @@ func (d *DB) IsBlockLocked(name string) (bool, error) {
 // O daemon usa isso para saber o que bloquear.
 func (d *DB) GetActiveBlocks() ([]ActiveBlockDetail, error) {
 	rows, err := d.conn.Query(`
-		SELECT b.id, b.name, ab.locked, ab.lock_chars
+		SELECT b.id, b.name, COALESCE(b.mode, 'block'), ab.locked, ab.lock_chars
 		FROM active_blocks ab
 		JOIN blocks b ON b.id = ab.block_id
 	`)
@@ -657,7 +688,7 @@ func (d *DB) GetActiveBlocks() ([]ActiveBlockDetail, error) {
 		var blockID int
 		var abd ActiveBlockDetail
 
-		if err := rows.Scan(&blockID, &abd.BlockName, &abd.Locked, &abd.LockChars); err != nil {
+		if err := rows.Scan(&blockID, &abd.BlockName, &abd.Mode, &abd.Locked, &abd.LockChars); err != nil {
 			return nil, fmt.Errorf("erro ao ler bloco ativo: %w", err)
 		}
 
@@ -691,6 +722,8 @@ func (d *DB) GetAllBlockedDomains() ([]string, error) {
 		SELECT DISTINCT s.domain
 		FROM sites s
 		JOIN active_blocks ab ON ab.block_id = s.block_id
+		JOIN blocks b ON b.id = s.block_id
+		WHERE COALESCE(b.mode, 'block') = 'block'
 		ORDER BY s.domain
 	`)
 	if err != nil {

@@ -1,0 +1,54 @@
+# RASCUNHO — revise antes de usar.
+#
+# YouTube e Reddit vieram do pedido; a lista de notícias é um chute meu,
+# baseado em estar na França com ligações ao Reino Unido. Corte o que não
+# se aplica e acrescente o que faltou — é mais fácil editar este arquivo
+# agora do que remover domínios depois, quando o bloco estiver travado.
+#
+# Subdomínios precisam ser listados um a um: a camada /etc/hosts cobre só o
+# domínio exato e a versão com "www.".
+
+# --- YouTube ---
+youtube.com
+m.youtube.com
+music.youtube.com
+youtu.be
+
+# --- Reddit ---
+reddit.com
+old.reddit.com
+np.reddit.com
+redd.it
+
+# --- Notícias: França ---
+lemonde.fr
+lefigaro.fr
+liberation.fr
+francetvinfo.fr
+france24.com
+bfmtv.com
+20minutes.fr
+lesechos.fr
+mediapart.fr
+huffingtonpost.fr
+
+# --- Notícias: Reino Unido / internacional ---
+bbc.co.uk
+bbc.com
+theguardian.com
+telegraph.co.uk
+independent.co.uk
+dailymail.co.uk
+ft.com
+economist.com
+reuters.com
+apnews.com
+nytimes.com
+washingtonpost.com
+cnn.com
+news.ycombinator.com
+
+# --- Agregadores ---
+news.google.com
+apple.news
+flipboard.com
