@@ -545,6 +545,19 @@ var blockInfoCmd = &cobra.Command{
 			fmt.Println("Agenda: nenhuma (só liga e desliga na mão)")
 		}
 
+		folgas, err := database.GetRecessPolicies(block.ID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
+		if len(folgas) > 0 {
+			fmt.Println()
+			fmt.Println("Folgas (peça na hora com 'open-turkey recess'):")
+			for _, f := range folgas {
+				fmt.Printf("  - %s\n", f.Descreve())
+			}
+		}
+
 		fmt.Println()
 		if len(block.Sites) > 0 {
 			fmt.Println("Sites bloqueados:")

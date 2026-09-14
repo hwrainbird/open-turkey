@@ -142,6 +142,27 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE INDEX IF NOT EXISTS idx_schedules_block ON schedules(block_id);
 
+CREATE TABLE IF NOT EXISTS recess_policies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id    INTEGER NOT NULL,
+    weekday     INTEGER NOT NULL,
+    start_min   INTEGER NOT NULL DEFAULT 0,
+    end_min     INTEGER NOT NULL DEFAULT 1440,
+    minutes     INTEGER NOT NULL,
+    max_per_day INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS recess_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id   INTEGER NOT NULL,
+    started_at DATETIME NOT NULL,
+    minutes    INTEGER NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_recess_log_block ON recess_log(block_id, started_at);
+
 CREATE TABLE IF NOT EXISTS suppressions (
     block_id INTEGER PRIMARY KEY,
     until    DATETIME NOT NULL,

@@ -128,16 +128,29 @@ if [ "$ATIVAR" = "--activate" ]; then
     echo
     echo "==> Agendando"
 
-    # ai: coberto 24h por dia, menos sábado das 10:00 às 10:05.
-    "$OT" block schedule-except ai sat 10:00-10:05
+    # ai: bloqueado 24h por dia, todos os dias.
+    "$OT" block schedule ai daily 00:00-24:00
+
+    # A folga de sábado é pedida na hora, não tem horário marcado. Trinta
+    # minutos é um palpite meu — troque o número e rode de novo se quiser
+    # outro. A janela fixa anterior (10:00–10:05) obrigava a estar na frente
+    # do computador às dez em ponto; perdida a hora, perdida a semana.
+    "$OT" block recess-policy ai sat --minutes 30
 
     # attention e porn-gambling-games: o tempo todo, todos os dias.
     "$OT" block schedule attention daily 00:00-24:00
     "$OT" block schedule porn-gambling-games daily 00:00-24:00
 
-    # evening: dias de semana e domingo, a partir das 17h30.
+    # evening: dias de semana a partir das 17h30...
     "$OT" block schedule evening mon-fri 17:30-24:00
-    "$OT" block schedule evening sun 17:30-24:00
+
+    # ...e domingo o dia inteiro.
+    "$OT" block schedule evening sun 00:00-24:00
+
+    # Com o domingo fechado das 00h às 24h, uma folga curta deixa de ser um
+    # luxo: é o que permite resolver uma coisa qualquer fora da lista-branca
+    # sem precisar derrubar o bloco inteiro pelo desafio de digitação.
+    "$OT" block recess-policy evening sun --minutes 5
 
     echo
     echo "Agendas aplicadas. O daemon liga e desliga sozinho a partir de agora."
