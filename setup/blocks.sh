@@ -96,7 +96,7 @@ criar_bloco attention
 adicionar_sites attention "$LISTAS/attention.txt"
 
 # ---------------------------------------------------------------------------
-# 3. vice — pornografia, apostas e jogos, sempre
+# 3. porn-gambling-games — pornografia, apostas e jogos, sempre
 # ---------------------------------------------------------------------------
 #
 # As 22 regras de palavra-chave da lista original (*p=*betting* e afins) não
@@ -104,9 +104,9 @@ adicionar_sites attention "$LISTAS/attention.txt"
 # Quem cobre essa brecha é o bloco "evening", que a partir das 17h30 bloqueia
 # tudo que não estiver na lista-branca.
 
-echo "==> Vice (porn, gambling, games)"
-criar_bloco vice
-adicionar_sites vice "$LISTAS/vice.txt"
+echo "==> Porn, gambling, games"
+criar_bloco porn-gambling-games
+adicionar_sites porn-gambling-games "$LISTAS/porn-gambling-games.txt"
 
 # ---------------------------------------------------------------------------
 # 4. evening — lista-branca a partir das 17h30
@@ -131,9 +131,9 @@ if [ "$ATIVAR" = "--activate" ]; then
     # ai: coberto 24h por dia, menos sábado das 10:00 às 10:05.
     "$OT" block schedule-except ai sat 10:00-10:05
 
-    # attention e vice: o tempo todo, todos os dias.
+    # attention e porn-gambling-games: o tempo todo, todos os dias.
     "$OT" block schedule attention daily 00:00-24:00
-    "$OT" block schedule vice daily 00:00-24:00
+    "$OT" block schedule porn-gambling-games daily 00:00-24:00
 
     # evening: dias de semana e domingo, a partir das 17h30.
     "$OT" block schedule evening mon-fri 17:30-24:00
