@@ -96,7 +96,8 @@ func autorizarRemocao(database *db.DB, name string) error {
 	}
 
 	fmt.Printf("O bloco '%s' está travado.\n", name)
-	fmt.Println("Remover itens exige o desafio de digitação.")
+	fmt.Println("Afrouxar um bloco travado — remover itens ou mexer na agenda —")
+	fmt.Println("exige o desafio de digitação.")
 	fmt.Println("Ao contrário de 'unlock', o bloco continua ativo e travado depois.")
 
 	sucesso, err := lock.RunChallenge(detalhe.LockChars)
@@ -135,6 +136,15 @@ var blockCmd = &cobra.Command{
 var blockCreateCmd = &cobra.Command{
 	Use:   "create [nome]",
 	Short: "Criar um novo bloco",
+	Long: `Cria um bloco vazio, pronto para receber sites e apps.
+
+Com --allow o sentido da lista se inverte: em vez de bloquear os sites
+listados, o bloco bloqueia TUDO e deixa passar só o que estiver na lista.
+
+O modo lista-branca vale apenas dentro do navegador. É onde ele pode ser feito
+com segurança: negar tudo no firewall quebraria os próprios sites liberados
+assim que o IP deles mudasse, e numa máquina sem acesso de administrador isso
+seria irreversível. O terminal, o ssh e o git não são afetados.`,
 	// cobra.ExactArgs(1) garante que o usuário passe exatamente 1 argumento.
 	// Se passar 0 ou mais de 1, o Cobra exibe uma mensagem de erro automática.
 	Args: cobra.ExactArgs(1),
@@ -153,7 +163,12 @@ var blockCreateCmd = &cobra.Command{
 		defer database.Close()
 
 		// Chamamos a função do pacote db para criar o bloco.
-		if err := database.CreateBlock(name); err != nil {
+		modo := db.ModoBloqueio
+		if listaBranca, _ := cmd.Flags().GetBool("allow"); listaBranca {
+			modo = db.ModoListaBranca
+		}
+
+		if err := database.CreateBlockMode(name, modo); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 			os.Exit(1)
 		}
@@ -483,6 +498,9 @@ var blockInfoCmd = &cobra.Command{
 
 		// Exibimos as informações básicas do bloco.
 		fmt.Printf("Bloco: %s\n", block.Name)
+		if block.Mode == db.ModoListaBranca {
+			fmt.Println("Modo: LISTA-BRANCA — bloqueia tudo no navegador, exceto os sites abaixo")
+		}
 		fmt.Printf("Criado em: %s\n", block.CreatedAt)
 
 		// Montamos a linha de status baseada nos campos Active e Locked.
@@ -504,6 +522,29 @@ var blockInfoCmd = &cobra.Command{
 
 		// Exibimos a lista de sites bloqueados.
 		// Separamos com uma linha em branco para melhorar a legibilidade.
+		// A agenda muda quando o bloco liga e desliga sozinho, então precisa
+		// aparecer aqui: sem isso, um bloco inativo agendado parece um bloco
+		// esquecido, e um bloco ativo parece ter sido ligado na mão.
+		janelas, err := database.GetSchedulesByName(block.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println()
+		if len(janelas) > 0 {
+			fmt.Println("Agenda (o daemon liga e desliga sozinho):")
+			for _, j := range janelas {
+				trava := "sem trava"
+				if j.Locked {
+					trava = fmt.Sprintf("trava de %d caracteres", j.LockChars)
+				}
+				fmt.Printf("  - %s  (%s)\n", j.Descreve(), trava)
+			}
+		} else {
+			fmt.Println("Agenda: nenhuma (só liga e desliga na mão)")
+		}
+
 		fmt.Println()
 		if len(block.Sites) > 0 {
 			fmt.Println("Sites bloqueados:")
@@ -583,6 +624,8 @@ func init() {
 	rootCmd.AddCommand(blockCmd)
 
 	// Adicionamos todos os subcomandos como filhos de "block".
+	blockCreateCmd.Flags().Bool("allow", false, "Lista-branca: bloqueia tudo e libera só os sites listados (só no navegador)")
+
 	blockCmd.AddCommand(blockCreateCmd)
 	blockCmd.AddCommand(blockAddSiteCmd)
 	blockCmd.AddCommand(blockRemoveSiteCmd)
