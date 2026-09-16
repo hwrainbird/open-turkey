@@ -131,11 +131,12 @@ if [ "$ATIVAR" = "--activate" ]; then
     # ai: bloqueado 24h por dia, todos os dias.
     "$OT" block schedule ai daily 00:00-24:00
 
-    # A folga de sábado é pedida na hora, não tem horário marcado. Trinta
-    # minutos é um palpite meu — troque o número e rode de novo se quiser
-    # outro. A janela fixa anterior (10:00–10:05) obrigava a estar na frente
-    # do computador às dez em ponto; perdida a hora, perdida a semana.
-    "$OT" block recess-policy ai sat --minutes 30
+    # A folga de sábado é pedida na hora, não tem horário marcado. São os
+    # mesmos cinco minutos da janela fixa anterior (10:00–10:05); o que mudou
+    # é que agora você escolhe QUANDO usá-los. A janela fixa obrigava a estar
+    # na frente do computador às dez em ponto — perdida a hora, perdida a
+    # semana.
+    "$OT" block recess-policy ai sat --minutes 5
 
     # attention e porn-gambling-games: o tempo todo, todos os dias.
     "$OT" block schedule attention daily 00:00-24:00
